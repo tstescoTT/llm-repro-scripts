@@ -288,13 +288,15 @@ def make_api_request(request_id, results_list, lock, json_lock, timeout=None):
         # Prepare the request
         data = json.dumps(REQUEST_PAYLOAD).encode('utf-8')
         
+        # Prepare headers
+        headers = {'Content-Type': 'application/json'}
+        if API_TOKEN:
+            headers['Authorization'] = f'Bearer {API_TOKEN}'
+        
         req = urllib.request.Request(
             API_URL,
             data=data,
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {API_TOKEN}'
-            }
+            headers=headers
         )
         
         # Make the request with optional timeout
