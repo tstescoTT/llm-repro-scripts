@@ -859,26 +859,15 @@ def set_up_environment():
     print(f"original LLAMA_DIR:={llama_dir}")
     print(f"original MODEL_WEIGHTS_PATH:={weights_dir}")
     if weights_dir:
-        symlinks_dir = Path("./model_file_symlinks_map")
+        symlinks_dir = script_path = os.path.abspath(__file__) / "model_file_symlinks_map"
+        print(f"creating symlinks_dir:={symlinks_dir}")
         symlinks_dir.mkdir(parents=True, exist_ok=True)
-        if weights_dir.match("*Llama*"):
+        if "Llama" in str(weights_dir):
             model_dir_name = "meta-llama/Llama-3.3-70B-Instruct"
             # the mapping in: models/tt_transformers/tt/model_spec.py
             # uses e.g. Llama3.2 instead of Llama-3.2
             model_dir_name = model_dir_name.replace("Llama-", "Llama")
             file_symlinks_map = {}
-            if model_spec_json["hf_model_repo"].startswith(
-                "meta-llama/Llama-3.2-11B-Vision"
-            ):
-                # Llama-3.2-11B-Vision requires specific file symlinks with different names
-                # The loading code in:
-                # https://github.com/tenstorrent/tt-metal/blob/v0.57.0-rc71/models/tt_transformers/demo/simple_vision_demo.py#L55
-                # does not handle this difference in naming convention for the weights
-                file_symlinks_map = {
-                    "consolidated.00.pth": "consolidated.pth",
-                    "params.json": "params.json",
-                    "tokenizer.model": "tokenizer.model",
-                }
 
             llama_dir = create_model_symlink(
                 symlinks_dir,
@@ -886,9 +875,14 @@ def set_up_environment():
                 weights_dir,
                 file_symlinks_map=file_symlinks_map,
             )
-
+            print(f"new LLAMA_DIR:={llama_dir}")
+            print(f"new HF_MODEL:={None}")
             os.environ["LLAMA_DIR"] = str(llama_dir)
             os.environ["HF_MODEL"] = None
+        else:
+            print(f"no symlinks needed for {weights_dir}")
+            os.environ["HF_MODEL"] = str(weights_dir)
+            print(f"new HF_MODEL:={weights_dir}")
 
 
 if __name__ == "__main__":
