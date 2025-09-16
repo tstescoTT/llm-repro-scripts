@@ -9,6 +9,7 @@ CLI Options:
   --concurrency: Maximum number of concurrent requests (default: 32)
   --loops: Number of times to loop over (concurrency) requests (default: 3)
   --timeout: Timeout for each request in seconds (default: no timeout)
+  --skip-trace-capture: Skip the warmup trace capture request (default: false, runs 1 warmup request)
 """
 
 import json
@@ -372,6 +373,13 @@ def parse_args():
         help='Set timeout for each request in seconds (e.g., 0.01 for almost immediate timeout, default: no timeout)'
     )
     
+    parser.add_argument(
+        '--skip-trace-capture',
+        action='store_true',
+        default=False,
+        help='Skip the warmup trace capture request (default: false, runs 1 warmup request)'
+    )
+    
     return parser.parse_args()
 
 def main():
@@ -399,6 +407,35 @@ def main():
     json_lock = threading.Lock()  # Separate lock for incremental JSON file writing
     
     try:
+        # Run warmup trace capture request unless skipped
+        if not args.skip_trace_capture:
+            print("\n--- Warmup Trace Capture Request ---")
+            warmup_start_time = time.time()
+            
+            # Create a separate results list for warmup (not included in main results)
+            warmup_results = []
+            warmup_request_id = str(uuid.uuid4())
+            
+            print(f"Starting warmup request (ID: {warmup_request_id})")
+            
+            # Run single warmup request
+            warmup_thread = threading.Thread(
+                target=make_api_request,
+                args=(warmup_request_id, warmup_results, lock, json_lock, args.timeout)
+            )
+            warmup_thread.start()
+            warmup_thread.join()
+            
+            warmup_time = time.time() - warmup_start_time
+            print(f"Warmup request completed in {warmup_time:.2f} seconds")
+            
+            if warmup_results and warmup_results[0].success:
+                print("Warmup request successful - proceeding with main test")
+            else:
+                print("Warmup request failed - proceeding with main test anyway")
+            
+            print("=" * 60)
+        
         # Start overall timing
         overall_start_time = time.time()
         
