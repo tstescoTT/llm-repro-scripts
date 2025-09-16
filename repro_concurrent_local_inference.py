@@ -733,10 +733,9 @@ def main():
         device_params = {
             "trace_region_size": 140280832,
             "num_command_queues": 1,
-            "dispatch_core_axis": "col",
-            "sample_on_device_mode": "all", 
-            "fabric_config": "FABRIC_1D_RING",
+            "dispatch_core_axis": ttnn.DispatchCoreAxis.COL,
             "worker_l1_size": 1344544,
+            "fabric_config": True,
         }
         
         print(f"Device parameters: {device_params}")
@@ -758,19 +757,15 @@ def main():
         
         print(f"Opening mesh device with shape: {mesh_shape}")
         
-        # Configure devices with parameters before opening mesh device
-        for device_id in device_ids[:num_devices_requested]:
-            ttnn.device.configure_device(
-                device_id,
-                trace_region_size=device_params["trace_region_size"],
-                num_command_queues=device_params["num_command_queues"],
-                dispatch_core_axis=ttnn.DispatchCoreAxis.COL,
-                worker_l1_size=device_params["worker_l1_size"],
-                fabric_config=True,
-            )
+        # Extract fabric_config and handle it separately like conftest.py
+        fabric_config = device_params.pop("fabric_config", None)
+        
+        # Set fabric config before opening mesh device (like conftest.py set_fabric function)
+        if fabric_config:
+            ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D_RING)
         
         # Use the same approach as conftest.py mesh_device fixture
-        mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape)
+        mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape, **device_params)
         
         print(f"Mesh device initialized successfully with {mesh_device.get_num_devices()} devices")
     except Exception as e:
@@ -870,6 +865,9 @@ def main():
                     ttnn.close_mesh_device(submesh)
                 ttnn.close_mesh_device(mesh_device)
                 print("Mesh device closed successfully")
+            # Reset fabric config like conftest.py
+            if 'fabric_config' in locals() and fabric_config:
+                ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
         except Exception as e:
             print(f"Error closing mesh device: {e}")
 
