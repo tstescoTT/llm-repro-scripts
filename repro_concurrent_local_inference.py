@@ -683,20 +683,33 @@ def main():
     print(f"Results will be written incrementally to: {JSON_FILENAME}")
     print("=" * 60)
     
-    # Initialize mesh device (similar to how text_demo.py would get it from pytest fixture)
+    # Initialize mesh device (following the pattern from conftest.py)
     try:
         # Parse mesh device config
         mesh_config = eval(args.mesh_device_config)  # e.g., (8, 4)
         print(f"Initializing mesh device with config: {mesh_config}")
         
-        # This would normally be provided by pytest fixture, but we'll create it directly
-        # You may need to adjust this based on your specific tt-metal setup
-        mesh_device = ttnn.open_mesh_device(
-            ttnn.MeshShape(*mesh_config),
-            dispatch_core_axis=ttnn.DispatchCoreAxis.COL,
-        )
+        # Follow the same pattern as the mesh_device fixture in conftest.py
+        device_ids = ttnn.get_device_ids()
         
-        print("Mesh device initialized successfully")
+        if isinstance(mesh_config, tuple):
+            grid_dims = mesh_config
+            assert len(grid_dims) == 2, "Device mesh grid shape should have exactly two elements."
+            num_devices_requested = grid_dims[0] * grid_dims[1]
+            if not ttnn.using_distributed_env() and num_devices_requested > len(device_ids):
+                print(f"Requested {num_devices_requested} devices but only {len(device_ids)} available")
+                return 1
+            mesh_shape = ttnn.MeshShape(*grid_dims)
+        else:
+            num_devices_requested = min(mesh_config, len(device_ids))
+            mesh_shape = ttnn.MeshShape(1, num_devices_requested)
+        
+        print(f"Opening mesh device with shape: {mesh_shape}")
+        
+        # Use the same approach as conftest.py mesh_device fixture
+        mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape)
+        
+        print(f"Mesh device initialized successfully with {mesh_device.get_num_devices()} devices")
     except Exception as e:
         print(f"Failed to initialize mesh device: {e}")
         print("Make sure you're running in a proper tt-metal environment with TT devices available.")
@@ -786,133 +799,17 @@ def main():
         # Always clean up and close the incremental JSON array
         cleanup_model()
         close_json_array()
-        # Close mesh device
+        # Close mesh device (following conftest.py pattern)
         try:
             if 'mesh_device' in locals():
+                # Close submeshes first, then the main mesh device (like conftest.py)
+                for submesh in mesh_device.get_submeshes():
+                    ttnn.close_mesh_device(submesh)
                 ttnn.close_mesh_device(mesh_device)
                 print("Mesh device closed successfully")
         except Exception as e:
             print(f"Error closing mesh device: {e}")
 
-# Function to run concurrent inference (can be called from other scripts)
-def run_concurrent_inference(
-    mesh_device,
-    concurrency=32,
-    loops=3,
-    timeout=None,
-    max_seq_len=128 * 1024,
-    batch_size=1,
-    max_generated_tokens=128,
-    output_dir="output"
-):
-    """
-    Run concurrent inference with provided mesh device.
-    This function can be called from other scripts or tests.
-    """
-    global results_written_lock, OUTPUT_DIR, JSON_FILENAME
-    
-    # Override output directory and filename
-    OUTPUT_DIR = output_dir
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    JSON_FILENAME = os.path.join(OUTPUT_DIR, f"concurrent_local_inference_{timestamp}.json")
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
-    total_requests = concurrency * loops
-    print(f"Starting {total_requests} total requests ({concurrency} concurrent × {loops} loops) to local model")
-    if timeout is not None:
-        print(f"Request timeout: {timeout}s")
-    print(f"Max sequence length: {max_seq_len}")
-    print(f"Batch size: {batch_size}")
-    print(f"Max generated tokens: {max_generated_tokens}")
-    print(f"Results will be written incrementally to: {JSON_FILENAME}")
-    print("=" * 60)
-    
-    # Initialize model components
-    print("Initializing model components...")
-    if not initialize_model_components(mesh_device, max_seq_len, max_generated_tokens, batch_size):
-        print("Failed to initialize model components.")
-        return False
-    print("Model components initialized successfully")
-    
-    # Initialize global lock
-    results_written_lock = threading.Lock()
-    
-    # Shared data structures
-    results = []
-    lock = threading.Lock()
-    json_lock = threading.Lock()  # Separate lock for incremental JSON file writing
-    
-    try:
-        # Start overall timing
-        overall_start_time = time.time()
-        
-        # Loop over the specified number of loops
-        for loop_num in range(loops):
-            print(f"\\n--- Loop {loop_num + 1}/{loops} ---")
-            threads = []
-            loop_start_time = time.time()
-            
-            # Start all threads for this loop
-            for i in range(concurrency):
-                request_id = str(uuid.uuid4())
-                thread = threading.Thread(
-                    target=make_local_inference_request,
-                    args=(request_id, results, lock, json_lock, timeout, max_generated_tokens)
-                )
-                threads.append(thread)
-                thread.start()
-                print(f"Started request {i+1}/{concurrency} (ID: {request_id})")
-
-            
-            # Wait for all threads in this loop to complete
-            for thread in threads:
-                thread.join()
-            
-            loop_time = time.time() - loop_start_time
-            print(f"Loop {loop_num + 1} completed in {loop_time:.2f} seconds")
-        
-        total_time = time.time() - overall_start_time
-        
-        print("=" * 60)
-        print(f"All requests completed in {total_time:.2f} seconds")
-        
-        # Generate statistics
-        successful_requests = [r for r in results if r.success]
-        failed_requests = [r for r in results if not r.success]
-        
-        print(f"Successful requests: {len(successful_requests)}")
-        print(f"Failed requests: {len(failed_requests)}")
-        
-        if successful_requests:
-            avg_time = sum(r.processing_time for r in successful_requests) / len(successful_requests)
-            min_time = min(r.processing_time for r in successful_requests)
-            max_time = max(r.processing_time for r in successful_requests)
-            print(f"Average response time: {avg_time:.2f}s")
-            print(f"Min response time: {min_time:.2f}s")
-            print(f"Max response time: {max_time:.2f}s")
-        
-        print(f"Results saved to: {JSON_FILENAME}")
-        
-        # Print summary of failed requests if any
-        if failed_requests:
-            print("\\nFailed requests summary:")
-            for result in failed_requests:
-                print(f"  {result.request_id}: {result.error}")
-        
-        return True
-        
-    except KeyboardInterrupt:
-        print("\\nScript interrupted by user")
-        return False
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return False
-    finally:
-        # Always clean up and close the incremental JSON array
-        cleanup_model()
-        close_json_array()
 
 if __name__ == "__main__":
     sys.exit(main())
