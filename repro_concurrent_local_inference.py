@@ -861,7 +861,7 @@ def set_up_environment():
     if weights_dir:
         symlinks_dir = Path("./model_file_symlinks_map")
         symlinks_dir.mkdir(parents=True, exist_ok=True)
-        if weights_dir.contains("Llama"):
+        if weights_dir.match("*Llama*"):
             model_dir_name = "meta-llama/Llama-3.3-70B-Instruct"
             # the mapping in: models/tt_transformers/tt/model_spec.py
             # uses e.g. Llama3.2 instead of Llama-3.2
