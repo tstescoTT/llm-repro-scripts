@@ -814,7 +814,8 @@ def main():
 def set_up_environment():
     if not os.getenv("HF_MODEL"):
         if os.getenv("MODEL_WEIGHTS_PATH"):
-        os.environ["HF_MODEL"] = os.getenv("MODEL_WEIGHTS_PATH")
+            os.environ["HF_MODEL"] = os.getenv("MODEL_WEIGHTS_PATH")
+    assert os.getenv("HF_MODEL"), "HF_MODEL environment variable must be set"
 
 
 if __name__ == "__main__":
