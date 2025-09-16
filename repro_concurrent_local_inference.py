@@ -245,6 +245,46 @@ REQUEST_PAYLOAD = {
     ]
 }
 
+
+def create_model_symlink(symlinks_dir, model_name, weights_dir, file_symlinks_map={}):
+    """Helper function to create and manage model symlinks.
+
+    Args:
+        symlinks_dir: Directory to store symlinks
+        model_name: Model name to use for the symlink
+        weights_dir: Path to the model weights
+        file_symlinks_map: Dict of {target_file: source_file} for creating file-specific symlinks
+
+    Returns:
+        Path to the created symlink or directory
+    """
+    symlink_path = symlinks_dir / model_name
+
+    # Handle file-specific symlinks (for vision models)
+    if file_symlinks_map:
+        # Clean up any existing symlinks
+        if symlink_path.exists():
+            for _link in symlink_path.iterdir():
+                if _link.is_symlink():
+                    _link.unlink()
+        symlink_path.mkdir(parents=True, exist_ok=True)
+
+        # Create individual file symlinks
+        for target_file, source_file in file_symlinks_map.items():
+            (symlink_path / target_file).symlink_to(weights_dir / source_file)
+
+        return symlink_path
+
+    # Handle single directory/file symlink (standard case)
+    if symlink_path.is_symlink():
+        symlink_path.unlink()
+    assert (
+        not symlink_path.exists()
+    ), f"symlink location: {symlink_path} has a non-symlink there."
+    symlink_path.symlink_to(weights_dir)
+    return symlink_path
+
+
 class RequestResult:
     def __init__(self, request_id, success=False, response=None, error=None, processing_time=0):
         self.request_id = request_id
@@ -812,10 +852,43 @@ def main():
 
 
 def set_up_environment():
-    if not os.getenv("HF_MODEL"):
-        if os.getenv("MODEL_WEIGHTS_PATH"):
-            os.environ["HF_MODEL"] = os.getenv("MODEL_WEIGHTS_PATH")
-    assert os.getenv("HF_MODEL"), "HF_MODEL environment variable must be set"
+    hf_model = os.getenv("HF_MODEL")'
+    llama_dir = os.getenv("LLAMA_DIR")
+    weights_dir = Path(os.getenv("MODEL_WEIGHTS_PATH"))
+    print(f"original HF_MODEL:={hf_model}")
+    print(f"original LLAMA_DIR:={llama_dir}")
+    print(f"original MODEL_WEIGHTS_PATH:={weights_dir}")
+    if weights_dir:
+        symlinks_dir = Path("./model_file_symlinks_map")
+        symlinks_dir.mkdir(parents=True, exist_ok=True)
+        if weights_dir.contains("Llama"):
+            model_dir_name = "meta-llama/Llama-3.3-70B-Instruct"
+            # the mapping in: models/tt_transformers/tt/model_spec.py
+            # uses e.g. Llama3.2 instead of Llama-3.2
+            model_dir_name = model_dir_name.replace("Llama-", "Llama")
+            file_symlinks_map = {}
+            if model_spec_json["hf_model_repo"].startswith(
+                "meta-llama/Llama-3.2-11B-Vision"
+            ):
+                # Llama-3.2-11B-Vision requires specific file symlinks with different names
+                # The loading code in:
+                # https://github.com/tenstorrent/tt-metal/blob/v0.57.0-rc71/models/tt_transformers/demo/simple_vision_demo.py#L55
+                # does not handle this difference in naming convention for the weights
+                file_symlinks_map = {
+                    "consolidated.00.pth": "consolidated.pth",
+                    "params.json": "params.json",
+                    "tokenizer.model": "tokenizer.model",
+                }
+
+            llama_dir = create_model_symlink(
+                symlinks_dir,
+                model_dir_name,
+                weights_dir,
+                file_symlinks_map=file_symlinks_map,
+            )
+
+            os.environ["LLAMA_DIR"] = str(llama_dir)
+            os.environ["HF_MODEL"] = None
 
 
 if __name__ == "__main__":
