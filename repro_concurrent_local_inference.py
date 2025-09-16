@@ -852,7 +852,7 @@ def main():
 
 
 def set_up_environment():
-    hf_model = os.getenv("HF_MODEL")'
+    hf_model = os.getenv("HF_MODEL")
     llama_dir = os.getenv("LLAMA_DIR")
     weights_dir = Path(os.getenv("MODEL_WEIGHTS_PATH"))
     print(f"original HF_MODEL:={hf_model}")
