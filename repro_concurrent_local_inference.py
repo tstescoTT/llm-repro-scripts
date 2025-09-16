@@ -485,9 +485,27 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
         else:
             prompt = user_message
         
-        # Tokenize the input
-        input_tokens = tokenizer.encode(prompt, add_special_tokens=True)
-        input_tokens_tensor = torch.tensor([input_tokens])
+        # Use the same tokenization approach as text_demo.py
+        try:
+            (
+                input_tokens_prefill_pt,
+                encoded_prompts,
+                decoding_pos,
+                prefill_lens,
+            ) = preprocess_inputs_prefill(
+                [prompt],  # input_prompts as list
+                tokenizer,
+                [model_components['model_args']],  # model_args as list
+                True,  # instruct mode
+                max_generated_tokens,
+            )
+            
+            input_tokens_tensor = input_tokens_prefill_pt
+            input_tokens = encoded_prompts[0]  # Get the first (and only) encoded prompt
+            
+        except Exception as e:
+            logger.error(f"Error during tokenization preprocessing: {str(e)}")
+            raise e
         
         # Check timeout
         if timeout and (time.time() - start_time) > timeout:
@@ -501,7 +519,7 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
                 input_tokens_tensor,
                 page_table=page_table,
                 kv_cache=tt_kv_cache,
-                prompt_lens=[len(input_tokens)],
+                prompt_lens=decoding_pos,  # Use the decoding positions from preprocess_inputs_prefill
                 enable_trace=False,
             )
             
@@ -520,7 +538,7 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
             )
             
             generated_tokens = []
-            current_pos = torch.tensor([len(input_tokens)])
+            current_pos = torch.tensor([decoding_pos[0]])  # Use the decoding position from preprocessing
             out_tok = prefill_output.view(-1, 1)
             
             # Pad for batch size if needed
@@ -687,8 +705,16 @@ def cleanup_model():
     """Clean up model resources"""
     global model_components
     try:
-        if model_components.get('model') and hasattr(model_components['model'], 'tt_ccl'):
-            model_components['model'].tt_ccl.close()
+        # Clear model components to avoid issues during cleanup
+        if model_components.get('model'):
+            try:
+                if hasattr(model_components['model'], 'tt_ccl'):
+                    model_components['model'].tt_ccl.close()
+            except Exception as e:
+                print(f"Error closing model tt_ccl: {e}")
+        
+        # Clear all model components
+        model_components.clear()
         print("Model cleanup completed")
     except Exception as e:
         print(f"Error during model cleanup: {e}")
@@ -696,8 +722,11 @@ def cleanup_model():
 def signal_handler(signum, frame):
     """Handle interrupt signals"""
     print(f"\nReceived signal {signum}, cleaning up...")
-    cleanup_model()
-    close_json_array()
+    try:
+        cleanup_model()
+        close_json_array()
+    except Exception as e:
+        print(f"Error during signal cleanup: {e}")
     sys.exit(0)
 
 def main():
@@ -868,22 +897,34 @@ def main():
         print(f"Unexpected error: {e}")
         return 1
     finally:
-        # Always clean up and close the incremental JSON array
-        cleanup_model()
-        close_json_array()
-        # Close mesh device (following conftest.py pattern)
+        # Always clean up in proper order to avoid segfaults
         try:
-            if 'mesh_device' in locals():
-                # Close submeshes first, then the main mesh device (like conftest.py)
-                for submesh in mesh_device.get_submeshes():
-                    ttnn.close_mesh_device(submesh)
-                ttnn.close_mesh_device(mesh_device)
-                print("Mesh device closed successfully")
+            # First cleanup model components
+            cleanup_model()
+            
+            # Then close mesh device (following conftest.py pattern)
+            if 'mesh_device' in locals() and mesh_device is not None:
+                try:
+                    # Close submeshes first, then the main mesh device (like conftest.py)
+                    for submesh in mesh_device.get_submeshes():
+                        ttnn.close_mesh_device(submesh)
+                    ttnn.close_mesh_device(mesh_device)
+                    print("Mesh device closed successfully")
+                except Exception as e:
+                    print(f"Error closing mesh device: {e}")
+            
             # Reset fabric config like conftest.py
             if 'fabric_config' in locals() and fabric_config:
-                ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
+                try:
+                    ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
+                except Exception as e:
+                    print(f"Error resetting fabric config: {e}")
+                    
         except Exception as e:
-            print(f"Error closing mesh device: {e}")
+            print(f"Error during cleanup: {e}")
+        finally:
+            # Always close JSON array last
+            close_json_array()
 
 
 def set_up_environment():
