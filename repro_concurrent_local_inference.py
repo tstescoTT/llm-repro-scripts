@@ -14,6 +14,9 @@ CLI Options:
   --max_generated_tokens: Maximum number of tokens to generate (default: 128)
 """
 
+# SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
+# SPDX-License-Identifier: Apache-2.0
+
 import json
 import threading
 import time
@@ -24,25 +27,20 @@ import os
 import argparse
 import signal
 from pathlib import Path
+import pytest
+import torch
+import ttnn
+from loguru import logger
 
-# TT-NN and model imports
-try:
-    import torch
-    import ttnn
-    from loguru import logger
-    from models.demos.llama3_70b_galaxy.tt.generator import Generator, SamplingParams
-    from models.demos.llama3_70b_galaxy.tt.model_config import LlamaOptimizations
-    from models.demos.t3000.llama2_70b.reference.llama.llama31_8b.tokenizer import Tokenizer
-    from models.tt_transformers.tt.common import (
-        preprocess_inputs_prefill,
-        PagedAttentionConfig,
-    )
-    from models.demos.llama3_70b_galaxy.tt.llama_model import TtTransformer
-    from models.demos.llama3_70b_galaxy.tt.model_config import TtModelArgs
-except ImportError as e:
-    print(f"Error importing TT-NN dependencies: {e}")
-    print("This script requires TT-NN and the tt-metal dependencies to be installed.")
-    sys.exit(1)
+from models.demos.llama3_70b_galaxy.tt.generator import Generator, SamplingParams
+from models.demos.llama3_70b_galaxy.tt.model_config import LlamaOptimizations
+from models.demos.t3000.llama2_70b.reference.llama.llama31_8b.tokenizer import Tokenizer
+from models.tt_transformers.tt.common import (
+    preprocess_inputs_prefill,
+    PagedAttentionConfig,
+)
+from models.demos.llama3_70b_galaxy.tt.llama_model import TtTransformer
+from models.demos.llama3_70b_galaxy.tt.model_config import TtModelArgs
 
 # Generate timestamped filename at startup
 TIMESTAMP = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -308,8 +306,69 @@ def close_json_array():
     except Exception as e:
         print(f"Error closing JSON array: {e}")
 
-def create_tt_model(mesh_device, max_seq_len, max_generated_tokens, batch_size=1):
-    """Create and initialize the TT model components"""
+def create_tt_model(
+    mesh_device,
+    instruct,
+    max_batch_size,
+    optimizations,
+    max_seq_len,
+    num_layers,
+    dummy_weights,
+    page_params,
+    dtype=ttnn.bfloat8_b,
+    use_paged_kv_cache=False,
+    prefill_profile=False,
+):
+    """Create and initialize the TT model components (same as text_demo.py)"""
+    tt_model_args = TtModelArgs(
+        mesh_device,
+        instruct=instruct,
+        max_batch_size=32,
+        optimizations=optimizations,
+        max_seq_len=max_seq_len,
+        dummy_weights=dummy_weights,
+    )
+    # When running running prefill-only profile, run just 1 layer
+    tt_model_args.n_layers = num_layers if not prefill_profile else 1
+
+    state_dict = tt_model_args.load_state_dict()
+    page_table = None
+    paged_attention_config = None
+    tt_kv_cache = None
+
+    if use_paged_kv_cache:
+        paged_attention_config = PagedAttentionConfig(
+            block_size=page_params["page_block_size"],
+            max_num_blocks=page_params["page_max_num_blocks"],
+        )
+        # Implied shuffling of blocks
+        permutation = torch.randperm(paged_attention_config.max_num_blocks)
+        # Page table which maps virtual blocks to physical
+        reverse_permutation = torch.argsort(permutation)
+        page_table = reverse_permutation.reshape(
+            max_batch_size, paged_attention_config.max_num_blocks // max_batch_size
+        )
+
+    model = TtTransformer(
+        args=tt_model_args,
+        mesh_device=mesh_device,
+        dtype=dtype,
+        state_dict=state_dict,
+        weight_cache_path=tt_model_args.weight_cache_path(dtype),
+        paged_attention_config=paged_attention_config,
+        mode="prefill",
+        enable_prefetcher_performance_mode=True,
+    )
+
+    if use_paged_kv_cache:
+        tt_kv_cache = [l.attention.layer_past for l in model.layers]
+
+    return tt_model_args, model, page_table, [tt_kv_cache]
+
+def initialize_model_components(mesh_device, max_seq_len, max_generated_tokens, batch_size=1):
+    """Initialize the model components once for all threads to share"""
+    global model_components
+    
     try:
         instruct = True
         optimizations = LlamaOptimizations.performance
@@ -318,75 +377,24 @@ def create_tt_model(mesh_device, max_seq_len, max_generated_tokens, batch_size=1
         page_params = {"page_block_size": 64, "page_max_num_blocks": 2048}
         dtype = ttnn.bfloat8_b
         use_paged_kv_cache = True
-
-        tt_model_args = TtModelArgs(
+        
+        model_args, model, page_table, tt_kv_cache = create_tt_model(
             mesh_device,
             instruct=instruct,
             max_batch_size=batch_size,
             optimizations=optimizations,
             max_seq_len=max_seq_len,
+            num_layers=num_layers,
             dummy_weights=dummy_weights,
-        )
-        tt_model_args.n_layers = num_layers
-
-        state_dict = tt_model_args.load_state_dict()
-        page_table = None
-        paged_attention_config = None
-        tt_kv_cache = None
-
-        if use_paged_kv_cache:
-            paged_attention_config = PagedAttentionConfig(
-                block_size=page_params["page_block_size"],
-                max_num_blocks=page_params["page_max_num_blocks"],
-            )
-            # Implied shuffling of blocks
-            permutation = torch.randperm(paged_attention_config.max_num_blocks)
-            # Page table which maps virtual blocks to physical
-            reverse_permutation = torch.argsort(permutation)
-            page_table = reverse_permutation.reshape(
-                batch_size, paged_attention_config.max_num_blocks // batch_size
-            )
-
-        model = TtTransformer(
-            args=tt_model_args,
-            mesh_device=mesh_device,
+            page_params=page_params,
             dtype=dtype,
-            state_dict=state_dict,
-            weight_cache_path=tt_model_args.weight_cache_path(dtype),
-            paged_attention_config=paged_attention_config,
-            mode="prefill",
-            enable_prefetcher_performance_mode=True,
+            use_paged_kv_cache=use_paged_kv_cache,
+            prefill_profile=False,
         )
-
-        if use_paged_kv_cache:
-            tt_kv_cache = [l.attention.layer_past for l in model.layers]
-
-        tokenizer = Tokenizer(tt_model_args.tokenizer_path)
-        generator = Generator(model, tt_model_args, mesh_device, tokenizer=tokenizer)
-
-        return tt_model_args, model, page_table, [tt_kv_cache], tokenizer, generator
-
-    except Exception as e:
-        logger.error(f"Error creating TT model: {e}")
-        raise
-
-def initialize_model_components(max_seq_len, max_generated_tokens, batch_size=1):
-    """Initialize the model components once for all threads to share"""
-    global model_components
-    
-    try:
-        # Initialize mesh device (this would normally be done in the test setup)
-        # For now, we'll assume it's available or mock it
-        mesh_device = None  # This should be properly initialized based on your setup
         
-        if mesh_device is None:
-            # Mock mesh device for testing - replace with actual initialization
-            print("Warning: Using mock mesh device. Replace with actual mesh device initialization.")
-            return False
-        
-        (model_args, model, page_table, tt_kv_cache, tokenizer, generator) = create_tt_model(
-            mesh_device, max_seq_len, max_generated_tokens, batch_size
-        )
+        model_args.tokenizer = Tokenizer(model_args.tokenizer_path)
+        tokenizer = model_args.tokenizer
+        generator = Generator(model, model_args, mesh_device, tokenizer=tokenizer)
         
         model_components['model_args'] = model_args
         model_components['model'] = model
@@ -399,7 +407,7 @@ def initialize_model_components(max_seq_len, max_generated_tokens, batch_size=1)
         return True
         
     except Exception as e:
-        print(f"Error initializing model components: {e}")
+        logger.error(f"Error initializing model components: {e}")
         return False
 
 def make_local_inference_request(request_id, results_list, lock, json_lock, timeout=None, max_generated_tokens=128):
@@ -626,6 +634,13 @@ def parse_args():
         help='Maximum number of tokens to generate for each request (default: 128)'
     )
     
+    parser.add_argument(
+        '--mesh_device_config',
+        type=str,
+        default='(8,4)',
+        help='Mesh device configuration as tuple string (default: "(8,4)")'
+    )
+    
     return parser.parse_args()
 
 def cleanup_model():
@@ -668,9 +683,28 @@ def main():
     print(f"Results will be written incrementally to: {JSON_FILENAME}")
     print("=" * 60)
     
+    # Initialize mesh device (similar to how text_demo.py would get it from pytest fixture)
+    try:
+        # Parse mesh device config
+        mesh_config = eval(args.mesh_device_config)  # e.g., (8, 4)
+        print(f"Initializing mesh device with config: {mesh_config}")
+        
+        # This would normally be provided by pytest fixture, but we'll create it directly
+        # You may need to adjust this based on your specific tt-metal setup
+        mesh_device = ttnn.open_mesh_device(
+            ttnn.MeshShape(*mesh_config),
+            dispatch_core_axis=ttnn.DispatchCoreAxis.COL,
+        )
+        
+        print("Mesh device initialized successfully")
+    except Exception as e:
+        print(f"Failed to initialize mesh device: {e}")
+        print("Make sure you're running in a proper tt-metal environment with TT devices available.")
+        return 1
+    
     # Initialize model components
     print("Initializing model components...")
-    if not initialize_model_components(args.max_seq_len, args.max_generated_tokens, args.batch_size):
+    if not initialize_model_components(mesh_device, args.max_seq_len, args.max_generated_tokens, args.batch_size):
         print("Failed to initialize model components. Exiting.")
         return 1
     print("Model components initialized successfully")
@@ -748,6 +782,133 @@ def main():
     except Exception as e:
         print(f"Unexpected error: {e}")
         return 1
+    finally:
+        # Always clean up and close the incremental JSON array
+        cleanup_model()
+        close_json_array()
+        # Close mesh device
+        try:
+            if 'mesh_device' in locals():
+                ttnn.close_mesh_device(mesh_device)
+                print("Mesh device closed successfully")
+        except Exception as e:
+            print(f"Error closing mesh device: {e}")
+
+# Function to run concurrent inference (can be called from other scripts)
+def run_concurrent_inference(
+    mesh_device,
+    concurrency=32,
+    loops=3,
+    timeout=None,
+    max_seq_len=128 * 1024,
+    batch_size=1,
+    max_generated_tokens=128,
+    output_dir="output"
+):
+    """
+    Run concurrent inference with provided mesh device.
+    This function can be called from other scripts or tests.
+    """
+    global results_written_lock, OUTPUT_DIR, JSON_FILENAME
+    
+    # Override output directory and filename
+    OUTPUT_DIR = output_dir
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    JSON_FILENAME = os.path.join(OUTPUT_DIR, f"concurrent_local_inference_{timestamp}.json")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    total_requests = concurrency * loops
+    print(f"Starting {total_requests} total requests ({concurrency} concurrent × {loops} loops) to local model")
+    if timeout is not None:
+        print(f"Request timeout: {timeout}s")
+    print(f"Max sequence length: {max_seq_len}")
+    print(f"Batch size: {batch_size}")
+    print(f"Max generated tokens: {max_generated_tokens}")
+    print(f"Results will be written incrementally to: {JSON_FILENAME}")
+    print("=" * 60)
+    
+    # Initialize model components
+    print("Initializing model components...")
+    if not initialize_model_components(mesh_device, max_seq_len, max_generated_tokens, batch_size):
+        print("Failed to initialize model components.")
+        return False
+    print("Model components initialized successfully")
+    
+    # Initialize global lock
+    results_written_lock = threading.Lock()
+    
+    # Shared data structures
+    results = []
+    lock = threading.Lock()
+    json_lock = threading.Lock()  # Separate lock for incremental JSON file writing
+    
+    try:
+        # Start overall timing
+        overall_start_time = time.time()
+        
+        # Loop over the specified number of loops
+        for loop_num in range(loops):
+            print(f"\\n--- Loop {loop_num + 1}/{loops} ---")
+            threads = []
+            loop_start_time = time.time()
+            
+            # Start all threads for this loop
+            for i in range(concurrency):
+                request_id = str(uuid.uuid4())
+                thread = threading.Thread(
+                    target=make_local_inference_request,
+                    args=(request_id, results, lock, json_lock, timeout, max_generated_tokens)
+                )
+                threads.append(thread)
+                thread.start()
+                print(f"Started request {i+1}/{concurrency} (ID: {request_id})")
+
+            
+            # Wait for all threads in this loop to complete
+            for thread in threads:
+                thread.join()
+            
+            loop_time = time.time() - loop_start_time
+            print(f"Loop {loop_num + 1} completed in {loop_time:.2f} seconds")
+        
+        total_time = time.time() - overall_start_time
+        
+        print("=" * 60)
+        print(f"All requests completed in {total_time:.2f} seconds")
+        
+        # Generate statistics
+        successful_requests = [r for r in results if r.success]
+        failed_requests = [r for r in results if not r.success]
+        
+        print(f"Successful requests: {len(successful_requests)}")
+        print(f"Failed requests: {len(failed_requests)}")
+        
+        if successful_requests:
+            avg_time = sum(r.processing_time for r in successful_requests) / len(successful_requests)
+            min_time = min(r.processing_time for r in successful_requests)
+            max_time = max(r.processing_time for r in successful_requests)
+            print(f"Average response time: {avg_time:.2f}s")
+            print(f"Min response time: {min_time:.2f}s")
+            print(f"Max response time: {max_time:.2f}s")
+        
+        print(f"Results saved to: {JSON_FILENAME}")
+        
+        # Print summary of failed requests if any
+        if failed_requests:
+            print("\\nFailed requests summary:")
+            for result in failed_requests:
+                print(f"  {result.request_id}: {result.error}")
+        
+        return True
+        
+    except KeyboardInterrupt:
+        print("\\nScript interrupted by user")
+        return False
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return False
     finally:
         # Always clean up and close the incremental JSON array
         cleanup_model()
