@@ -859,11 +859,11 @@ def set_up_environment():
     print(f"original LLAMA_DIR:={llama_dir}")
     print(f"original MODEL_WEIGHTS_PATH:={weights_dir}")
     if weights_dir:
-        symlinks_dir = script_path = os.path.abspath(__file__) / "model_file_symlinks_map"
+        symlinks_dir = script_path = Path(__file__).parent / "model_file_symlinks_map"
         print(f"creating symlinks_dir:={symlinks_dir}")
         symlinks_dir.mkdir(parents=True, exist_ok=True)
         if "Llama" in str(weights_dir):
-            model_dir_name = "meta-llama/Llama-3.3-70B-Instruct"
+            model_dir_name = "Llama-3.3-70B-Instruct"
             # the mapping in: models/tt_transformers/tt/model_spec.py
             # uses e.g. Llama3.2 instead of Llama-3.2
             model_dir_name = model_dir_name.replace("Llama-", "Llama")
@@ -878,7 +878,8 @@ def set_up_environment():
             print(f"new LLAMA_DIR:={llama_dir}")
             print(f"new HF_MODEL:={None}")
             os.environ["LLAMA_DIR"] = str(llama_dir)
-            os.environ["HF_MODEL"] = None
+            if "HF_MODEL" in os.environ:
+                del os.environ["HF_MODEL"]
         else:
             print(f"no symlinks needed for {weights_dir}")
             os.environ["HF_MODEL"] = str(weights_dir)
