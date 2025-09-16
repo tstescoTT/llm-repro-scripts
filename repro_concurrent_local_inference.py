@@ -723,11 +723,23 @@ def main():
     print(f"Results will be written incrementally to: {JSON_FILENAME}")
     print("=" * 60)
     
-    # Initialize mesh device (following the pattern from conftest.py)
+    # Initialize mesh device with device parameters (following the pattern from text_demo.py)
     try:
         # Parse mesh device config
         mesh_config = eval(args.mesh_device_config)  # e.g., (8, 4)
         print(f"Initializing mesh device with config: {mesh_config}")
+        
+        # Configure device parameters like text_demo.py (hardcoded)
+        device_params = {
+            "trace_region_size": 140280832,
+            "num_command_queues": 1,
+            "dispatch_core_axis": "col",
+            "sample_on_device_mode": "all", 
+            "fabric_config": "FABRIC_1D_RING",
+            "worker_l1_size": 1344544,
+        }
+        
+        print(f"Device parameters: {device_params}")
         
         # Follow the same pattern as the mesh_device fixture in conftest.py
         device_ids = ttnn.get_device_ids()
@@ -745,6 +757,17 @@ def main():
             mesh_shape = ttnn.MeshShape(1, num_devices_requested)
         
         print(f"Opening mesh device with shape: {mesh_shape}")
+        
+        # Configure devices with parameters before opening mesh device
+        for device_id in device_ids[:num_devices_requested]:
+            ttnn.device.configure_device(
+                device_id,
+                trace_region_size=device_params["trace_region_size"],
+                num_command_queues=device_params["num_command_queues"],
+                dispatch_core_axis=ttnn.DispatchCoreAxis.COL,
+                worker_l1_size=device_params["worker_l1_size"],
+                fabric_config=True,
+            )
         
         # Use the same approach as conftest.py mesh_device fixture
         mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape)
