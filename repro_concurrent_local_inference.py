@@ -811,5 +811,12 @@ def main():
             print(f"Error closing mesh device: {e}")
 
 
+def set_up_environment():
+    if not os.getenv("HF_MODEL"):
+        if os.getenv("MODEL_WEIGHTS_PATH"):
+        os.environ["HF_MODEL"] = os.getenv("MODEL_WEIGHTS_PATH")
+
+
 if __name__ == "__main__":
+    set_up_environment()
     sys.exit(main())
