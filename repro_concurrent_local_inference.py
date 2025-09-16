@@ -740,6 +740,23 @@ def main():
         
         print(f"Device parameters: {device_params}")
         
+        # Process device parameters like get_updated_device_params() in tests/scripts/common.py
+        updated_device_params = device_params.copy()
+        
+        dispatch_core_axis = updated_device_params.pop("dispatch_core_axis", None)
+        dispatch_core_type = updated_device_params.pop("dispatch_core_type", None)
+        
+        if ttnn.device.is_blackhole() and dispatch_core_axis == ttnn.DispatchCoreAxis.ROW:
+            logger.warning("blackhole arch does not support DispatchCoreAxis.ROW, using DispatchCoreAxis.COL instead.")
+            dispatch_core_axis = ttnn.DispatchCoreAxis.COL
+        
+        dispatch_core_config = ttnn.DispatchCoreConfig(dispatch_core_type, dispatch_core_axis)
+        updated_device_params["dispatch_core_config"] = dispatch_core_config
+        
+        # Extract fabric_config and reliability_mode like conftest.py
+        fabric_config = updated_device_params.pop("fabric_config", None)
+        reliability_mode = updated_device_params.pop("reliability_mode", None)
+        
         # Follow the same pattern as the mesh_device fixture in conftest.py
         device_ids = ttnn.get_device_ids()
         
@@ -757,15 +774,12 @@ def main():
         
         print(f"Opening mesh device with shape: {mesh_shape}")
         
-        # Extract fabric_config and handle it separately like conftest.py
-        fabric_config = device_params.pop("fabric_config", None)
-        
         # Set fabric config before opening mesh device (like conftest.py set_fabric function)
         if fabric_config:
             ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_1D_RING)
         
         # Use the same approach as conftest.py mesh_device fixture
-        mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape, **device_params)
+        mesh_device = ttnn.open_mesh_device(mesh_shape=mesh_shape, **updated_device_params)
         
         print(f"Mesh device initialized successfully with {mesh_device.get_num_devices()} devices")
     except Exception as e:
