@@ -9,7 +9,7 @@ curl -L -o repro_concurrent_llm_requests.py https://raw.githubusercontent.com/ts
 export API_TOKEN="my-api-key"
 
 # run with quick timeouts to abort on vLLM server
-python3 repro_concurrent_llm_requests.py --concurrency 32 --loops 3 --timeout 0.1
+python3 repro_concurrent_llm_requests.py --concurrency 32 --loops 3 --timeout 15
 ```
 
 
