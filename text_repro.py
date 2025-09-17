@@ -483,7 +483,7 @@ def create_tt_model(
             False,  # is_page_table_sharded
         ),
         (  # long-16k-b32 - 32 users, 16K long prompt
-            "models/demos/llama3_70b_galaxy/demo/sample_prompts/repro_prompt_ISL_3175.json",  # input_prompts
+            "models/demos/llama3_70b_galaxy/demo/sample_prompts/repro_prompt_isl_2500.json",  # input_prompts
             True,  # instruct mode
             1000,  # repeat_batches
             128 * 1024,  # max_seq_len
@@ -492,7 +492,7 @@ def create_tt_model(
             True,  # paged_attention
             {"page_block_size": 64, "page_max_num_blocks": 2048},  # page_params
             {"temperature": 0, "top_p": 0.08},  # sampling_params (argmax)
-            False,  # stop_at_eos
+            True,  # stop_at_eos
             False,  # apc_test
             False,  # pcc_check
             False,  # prefill-only profile
@@ -518,7 +518,7 @@ def create_tt_model(
         "prefill-profile",  # prefill-only profile run
         "apc-test",  # apc check for 80L + teacher forced for prefill + pcc check on prefill and 1st decode token
         "pcc-80L",  # pcc check for 80L + teacher 
-        "repro-ISL-3175",  # repro prompt test
+        "repro-isl-2500",  # repro prompt test
     ],
 )
 @pytest.mark.parametrize(
@@ -614,7 +614,7 @@ def test_demo_text(
 
     enable_trace = True  # Use tracing for better perf
     prefill_enable_trace = True
-    print_to_file = False  # Enable this flag to print the output of all users to a file
+    print_to_file = True  # Enable this flag to print the output of all users to a file
     instruct = num_layers == 80 and instruct  # if using instruct weights it must be full model
     input_lengths = (
         [
