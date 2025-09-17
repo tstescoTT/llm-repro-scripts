@@ -1079,7 +1079,9 @@ def test_demo_text(
                 profiler.start(f"log_saving_file", iteration=batch_idx)
                 logger.info("Finished decoding, printing the final outputs...\n")
                 for i, (output, prompt) in enumerate(zip(all_outputs, input_prompts)):
-                    comp_len = len(output)
+                    prefill_len = prefill_lens[i]
+                    total_len = len(output)
+                    comp_len = total_len - prefill_len
                     text = tokenizer.decode(output)
                     prompt_including_assistant_tags = tokenizer.decode(
                         model_args.encode_prompt(prompt, instruct=instruct)
@@ -1088,7 +1090,7 @@ def test_demo_text(
                     if print_to_file:
                         with open(output_filename, "a") as f:
                             f.write(
-                                f"\nbatch: {batch_idx} user: {i}\ncompletion_tokens: {comp_len}\noutput:\n{text_after_prompt}\n\n"
+                                f"\nbatch: {batch_idx} user: {i}\nprompt_tokens: {prefill_len}\ncompletion_tokens: {comp_len}\ntotal_tokens: {total_len}\noutput:\n{text_after_prompt}\n\n"
                             )
                     else:
                         # Strip leading newlines from output when sent to terminal
