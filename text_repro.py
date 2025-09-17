@@ -1088,7 +1088,7 @@ def test_demo_text(
                     if print_to_file:
                         with open(output_filename, "a") as f:
                             f.write(
-                                f"\nbatch: {batch_idx} user: {i}\ncomp_len: {comp_len}\noutput:\n{text_after_prompt}\n\n"
+                                f"\nbatch: {batch_idx} user: {i}\ncompletion_tokens: {comp_len}\noutput:\n{text_after_prompt}\n\n"
                             )
                     else:
                         # Strip leading newlines from output when sent to terminal
