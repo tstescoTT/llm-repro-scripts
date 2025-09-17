@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """
-Concurrent Local LLM Inference Script v2
-Makes configurable concurrent requests to a locally loaded LLM model and saves results to a timestamped JSON file.
+Batch Local LLM Inference Script v2
+Makes configurable batch requests to a locally loaded LLM model and saves results to a timestamped JSON file.
 This version imports and reuses functions from text_demo.py instead of reimplementing them.
+Uses the same batch_size concept as text_demo.py where multiple users are processed in a single batch.
 
 CLI Options:
-  --concurrency: Maximum number of concurrent requests (default: 32)
-  --loops: Number of times to loop over (concurrency) requests (default: 3)
+  --batch_size: Number of users in a batch (default: 1, supports 1/2/4/8/16/32)
+  --loops: Number of times to loop over batch_size requests (default: 3)
   --timeout: Timeout for each request in seconds (default: no timeout)
   --max_seq_len: Maximum context length supported by the model (default: 128 * 1024)
-  --batch_size: Number of users in a batch (default: 1)
   --max_generated_tokens: Maximum number of tokens to generate (default: 128)
+
+Note: Higher batch sizes may cause resource contention on TT devices.
+Start with lower values (1-8) and increase gradually based on your hardware.
 """
 
 # SPDX-FileCopyrightText: © 2023 Tenstorrent Inc.
@@ -443,11 +446,8 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
                 max_generated_tokens,
             )
             
-            # Debug: Check the types of returned values
-            print(f"Debug - input_tokens_prefill_pt type: {type(input_tokens_prefill_pt)}")
-            print(f"Debug - decoding_pos type: {type(decoding_pos)}, value: {decoding_pos}")
-            
-            input_tokens_tensor = input_tokens_prefill_pt
+            # input_tokens_prefill_pt is a list of tensors, get the first (and only) one
+            input_tokens_tensor = input_tokens_prefill_pt[0]  # Get the first tensor from the list
             input_tokens = encoded_prompts[0]  # Get the first (and only) encoded prompt
             
         except Exception as e:
@@ -489,10 +489,6 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
             current_pos = torch.tensor([decoding_pos[0]])
             out_tok = prefill_output.view(-1, 1)
             
-            # Debug: Check types before shape access
-            print(f"Debug - current_pos type: {type(current_pos)}, shape: {current_pos.shape if hasattr(current_pos, 'shape') else 'no shape'}")
-            print(f"Debug - page_table type: {type(page_table)}, shape: {page_table.shape if hasattr(page_table, 'shape') else 'no shape'}")
-            print(f"Debug - out_tok type: {type(out_tok)}, shape: {out_tok.shape if hasattr(out_tok, 'shape') else 'no shape'}")
             
             # Pad for batch size if needed (following text_demo.py pattern)
             if out_tok.shape[0] != 32:
@@ -539,6 +535,14 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
             full_text = tokenizer.decode(full_tokens)
             
             processing_time = time.time() - start_time
+            
+            # Clean up tensors to prevent memory leaks
+            try:
+                del input_tokens_tensor, out_tok, current_pos
+                if page_table is not None:
+                    del page_table
+            except:
+                pass  # Ignore cleanup errors
             
             # Create response in OpenAI-like format
             response_data = {
@@ -599,22 +603,22 @@ def make_local_inference_request(request_id, results_list, lock, json_lock, time
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
-        description="Concurrent Local LLM Inference Script v2 - Uses text_demo.py functions",
+        description="Batch Local LLM Inference Script v2 - Uses text_demo.py functions and batch_size concept",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     parser.add_argument(
-        '--concurrency',
+        '--batch_size',
         type=int,
-        default=32,
-        help='Maximum number of concurrent requests (default: 32)'
+        default=1,
+        help='Number of users in a batch (default: 1, supports 1/2/4/8/16/32)'
     )
     
     parser.add_argument(
         '--loops',
         type=int,
         default=3,
-        help='Number of times to loop over (concurrency) requests being sent to model (default: 3)'
+        help='Number of times to loop over batch_size requests being sent to model (default: 3)'
     )
     
     parser.add_argument(
@@ -629,13 +633,6 @@ def parse_args():
         type=int,
         default=128 * 1024,
         help='Maximum context length supported by the model (default: 128 * 1024)'
-    )
-    
-    parser.add_argument(
-        '--batch_size',
-        type=int,
-        default=1,
-        help='Number of users in a batch (default: 1)'
     )
     
     parser.add_argument(
@@ -762,8 +759,8 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    total_requests = args.concurrency * args.loops
-    print(f"Starting {total_requests} total requests ({args.concurrency} concurrent × {args.loops} loops) to local model")
+    total_requests = args.batch_size * args.loops
+    print(f"Starting {total_requests} total requests ({args.batch_size} users per batch × {args.loops} loops) to local model")
     if args.timeout is not None:
         print(f"Request timeout: {args.timeout}s")
     print(f"Max sequence length: {args.max_seq_len}")
@@ -803,7 +800,7 @@ def main():
             loop_start_time = time.time()
             
             # Start all threads for this loop
-            for i in range(args.concurrency):
+            for i in range(args.batch_size):
                 request_id = str(uuid.uuid4())
                 thread = threading.Thread(
                     target=make_local_inference_request,
@@ -811,7 +808,7 @@ def main():
                 )
                 threads.append(thread)
                 thread.start()
-                print(f"Started request {i+1}/{args.concurrency} (ID: {request_id})")
+                print(f"Started request {i+1}/{args.batch_size} (ID: {request_id})")
 
             
             # Wait for all threads in this loop to complete
@@ -820,6 +817,16 @@ def main():
             
             loop_time = time.time() - loop_start_time
             print(f"Loop {loop_num + 1} completed in {loop_time:.2f} seconds")
+            
+            # Add memory cleanup between loops to prevent corruption
+            if loop_num < args.loops - 1:  # Don't cleanup after the last loop
+                try:
+                    import gc
+                    gc.collect()  # Force garbage collection
+                    time.sleep(1)  # Give system time to clean up
+                    print("Memory cleanup completed between loops")
+                except Exception as e:
+                    print(f"Warning: Memory cleanup failed: {e}")
         
         total_time = time.time() - overall_start_time
         
