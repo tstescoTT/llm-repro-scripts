@@ -419,9 +419,10 @@ def main():
             print(f"Starting warmup request (ID: {warmup_request_id})")
             
             # Run single warmup request
+            TRACE_CAPTURE_TIMEOUT = 7200
             warmup_thread = threading.Thread(
                 target=make_api_request,
-                args=(warmup_request_id, warmup_results, lock, json_lock, args.timeout)
+                args=(warmup_request_id, warmup_results, lock, json_lock, TRACE_CAPTURE_TIMEOUT)
             )
             warmup_thread.start()
             warmup_thread.join()
