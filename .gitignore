@@ -3,4 +3,5 @@
 *.pyc
 __pycache__/
 
-!sample_prompts/repro_prompt_ISL_3175.json
+!sample_prompts/repro_prompt_isl_3175.json
+!repro_prompt_isl_2500.json
