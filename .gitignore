@@ -2,3 +2,5 @@
 *.jsonl
 *.pyc
 __pycache__/
+
+!sample_prompts/repro_prompt_ISL_3175.json
