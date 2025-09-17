@@ -8,8 +8,8 @@
 curl -L -o repro_concurrent_llm_requests.py https://raw.githubusercontent.com/tstescoTT/llm-repro-scripts/refs/heads/main/repro_concurrent_llm_requests.py
 export API_TOKEN="my-api-key"
 
-# run with quick timeouts to abort on vLLM server
-python3 repro_concurrent_llm_requests.py --concurrency 32 --loops 3 --timeout 15
+# run with timeouts to abort on vLLM server and inter batch delay 
+python3 repro_concurrent_llm_requests.py --concurrency 32 --loops 5 --timeout 10 --batch-delay 5
 ```
 
 
