@@ -10,6 +10,7 @@ CLI Options:
   --loops: Number of times to loop over (concurrency) requests (default: 3)
   --timeout: Timeout for each request in seconds (default: no timeout)
   --skip-trace-capture: Skip the warmup trace capture request (default: false, runs 1 warmup request)
+  --batch-delay: Sleep delay in seconds between request batches/loops (default: 0, no delay)
 """
 
 import json
@@ -380,6 +381,13 @@ def parse_args():
         help='Skip the warmup trace capture request (default: false, runs 1 warmup request)'
     )
     
+    parser.add_argument(
+        '--batch-delay',
+        type=float,
+        default=0,
+        help='Sleep delay in seconds between request batches/loops (default: 0, no delay)'
+    )
+    
     return parser.parse_args()
 
 def main():
@@ -464,6 +472,11 @@ def main():
             
             loop_time = time.time() - loop_start_time
             print(f"Loop {loop_num + 1} completed in {loop_time:.2f} seconds")
+            
+            # Add batch delay if specified and not the last loop
+            if args.batch_delay > 0 and loop_num < args.loops - 1:
+                print(f"Sleeping for {args.batch_delay} seconds before next batch...")
+                time.sleep(args.batch_delay)
         
         total_time = time.time() - overall_start_time
         
